@@ -3,7 +3,17 @@
 		"ohdsi_hecate": {
 			"url": "https://hecate.pantheon-hds.com/mcp/sse",
 			"type": "http"
-		}
+		},
+		"comparator_selection": {
+			"command": "e:/git/AgentPlayground/.venv/Scripts/python.exe",
+			"args": [
+				"mcp/comparator_selection.py"
+			],
+			"env": {
+				"API_BASE_URL": "https://rconnect.jnj.com/cse/api"
+			}
+}
 	},
+	
 	"inputs": []
 }
