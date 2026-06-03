@@ -5,14 +5,8 @@
 			"type": "http"
 		},
 		"comparator_selection": {
-			"command": "e:/git/AgentPlayground/.venv/Scripts/python.exe",
-			"args": [
-				"mcp/comparator_selection.py"
-			],
-			"env": {
-				"API_BASE_URL": "https://rconnect.jnj.com/cse/api"
-			}
-}
+			"url": "https://rconnect.jnj.com/cse/api/mcp",
+			"type": "http"
 	},
 	
 	"inputs": []
