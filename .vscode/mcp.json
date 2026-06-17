@@ -7,6 +7,7 @@
 		"comparator_selection": {
 			"url": "https://rconnect.jnj.com/cse/api/mcp",
 			"type": "http"
+		}
 	},
 	
 	"inputs": []
