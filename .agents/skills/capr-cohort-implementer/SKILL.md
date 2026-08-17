@@ -73,6 +73,30 @@ cohortDef <- createT2dmCohort()
 writeCohort(cohortDef, "t2dm_cohort.json")
 ```
 
+**Inlined form for a server-side compile tool.** The same definition as a single self-contained
+`cohort(...)` expression — concept sets inlined (each `cs()` keeps its `name = `), no assignments,
+no `writeCohort()`/`compile()`. This is the exact string to pass as the `caprCode` argument to a
+sandboxed `generate_cohort` / `evaluate_cohort` tool (never pass JSON):
+
+```r
+cohort(
+  entry = entry(
+    conditionOccurrence(cs(descendants(201826), name = "type 2 diabetes")),
+    observationWindow = continuousObservation(priorDays = 365L),
+    primaryCriteriaLimit = "First"
+  ),
+  attrition = attrition(
+    "no prior insulin" = withAll(
+      exactly(0, drugExposure(cs(descendants(1596977), name = "insulin")),
+              duringInterval(eventStarts(-Inf, -1)))
+    ),
+    expressionLimit = "First"
+  ),
+  exit = exit(endStrategy = observationExit()),
+  era = era(eraDays = 0L)
+)
+```
+
 Contract:
 
 - **Fully define the index event inside `entry()`.** Every restriction that determines which
@@ -84,6 +108,14 @@ Contract:
   people whose first raw event fails the qualifier (see the reference's "Fully define the index
   event in entry()").
 - **Return the `Cohort` object.** Serialization happens in the example block, not in the function.
+
+> **Submitting to a server-side compile tool.** The function-form above is the *human deliverable*.
+> Some environments expose a remote tool (e.g. `generate_cohort` / `evaluate_cohort`) that compiles
+> Capr **server-side** in a sandbox and accepts a **single self-contained `cohort(...)` expression**:
+> every concept set inlined as the first argument of its domain query (each `cs()` with a
+> `name = `), and **no assignments, helper variables, `<-`, `::`, or non-Capr calls** (the sandbox
+> rejects them). When targeting such a tool, submit the inlined `cohort(...)` expression rather than
+> the multi-statement function body, and do not pass compiled JSON.
 
 ### Step 3 — Validate by executing
 

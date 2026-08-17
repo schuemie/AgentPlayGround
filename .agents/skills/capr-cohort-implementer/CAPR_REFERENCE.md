@@ -40,9 +40,13 @@ Capr code that can be added to the overall code.
 library(Capr)
 ```
 
-No database connection is needed to build and serialize a cohort definition. A connection is
-optional everywhere it appears, used only to fill in concept names for Atlas display (see
-"Recommend hydrating concept sets" below).
+No database connection is needed to build and serialize a cohort definition built from concept
+sets and value/count criteria. The connection is used only to fill in concept names for Atlas
+display (see "Recommend hydrating concept sets" below) — **with one important exception:** in Capr
+2.1.1 the ids-based `conceptAttribute` type/status/provenance filters (`visitType()`,
+`conditionType()`, `conditionStatus()`, `drugType()`, `measurementType()`, `valueAsConcept()`, …)
+*require* a live connection and error without one. Only `measurementUnit()` among the ids-based
+attributes works connectionless. See "Query Attributes — Type / Status".
 
 **Code-generation conventions.** Always make defaults explicit rather than relying on fallbacks:
 
@@ -148,9 +152,13 @@ portions once they agree.
 ### Recommend hydrating concept sets when the user has a database connection
 
 A `ConceptSet` built directly with `cs()` only has `concept_id` populated — `concept_name`,
-`domain_id`, `vocabulary_id`, etc. are left blank. The same applies to ids-based attributes like
-`measurementUnit()`, `visitType()`, and the other type/provenance filters when called without a
-connection. The generated cohort JSON is still fully valid and produces correct SQL, but Atlas's
+`domain_id`, `vocabulary_id`, etc. are left blank. The same applies to `measurementUnit()`, which
+accepts unit ids with no connection and simply leaves the unit's concept metadata blank. The other
+ids-based type/provenance filters behave differently: in Capr 2.1.1 `visitType()`,
+`conditionType()`, `conditionStatus()`, `drugType()`, `measurementType()`, `valueAsConcept()`, etc.
+*require* a live connection and error without one (see "Query Attributes — Type / Status"), so for
+those it is not merely a display nicety. The generated cohort JSON is still fully valid and
+produces correct SQL, but Atlas's
 UI has nothing to display for those blank fields, which makes the cohort harder for a human to
 read/review there. This comes up most for small inline concept sets and attribute ids — larger,
 pre-built concept sets (see Prerequisites) are usually already sourced from Atlas or ATHENA and
@@ -163,8 +171,10 @@ If the user has (or can get) a live OMOP CDM database connection, tell them they
 conceptSet <- getConceptSetDetails(conceptSet, con, vocabularyDatabaseSchema = "cdm_schema")
 ```
 
-For the ids-based attributes (`measurementUnit()`, `visitType()`, etc.), pass
-`connection`/`vocabularyDatabaseSchema` directly to the attribute function instead. When the
+For the ids-based attributes, pass `connection`/`vocabularyDatabaseSchema` directly to the
+attribute function instead. This is *optional* only for `measurementUnit()`; for `visitType()` and
+the other type/provenance filters the connection is **mandatory** in Capr 2.1.1 (they error
+without it), so there it is not a hydration nicety but a hard requirement. When the
 generated cohort uses any ids-based attribute and the user wants hydration, don't just mention
 it — update the code: add optional `connection = NULL, vocabularyDatabaseSchema = NULL`
 parameters to the cohort function and pass them through to those attribute calls (concept-set
@@ -550,8 +560,17 @@ writing.)
 | Param | Type | Default | Notes |
 |---|---|---|---|
 | `ids` | `integer` vector | — | Type/status concept IDs |
-| `connection` | DatabaseConnector connection or `NULL` | `NULL` | Optional — used only to look up concept names for Atlas display. Without it the attribute is built from the ids alone, which produces identical SQL |
-| `vocabularyDatabaseSchema` | `character` or `NULL` | `NULL` | Schema containing the `concept` table; only used with `connection` |
+| `connection` | DatabaseConnector connection or `NULL` | `NULL` | **Required in Capr 2.1.1** despite the `NULL` default — these functions internally call `getConceptSetDetails()`, so they error without a live connection (`error in ... 'dbIsValid': argument "connection" is missing`). The connection only fills in concept names for Atlas display and does not change the generated SQL, but the call fails without it. |
+| `vocabularyDatabaseSchema` | `character` or `NULL` | `NULL` | Schema containing the `concept` table; used with `connection` |
+
+**No connection available?** In Capr 2.1.1 every `conceptAttribute` type/status/provenance
+function in this section (`conditionType`, `conditionStatus`, `drugType`, `visitType`,
+`measurementType`, `valueAsConcept`, …) requires a live `connection` and errors without one —
+`measurementUnit()` is the only ids-based attribute that works connectionless. When you have no
+connection and need a care setting (e.g. "inpatient"), express it structurally instead of with
+`visitType()`: put the care-setting concept in a `visit()` ConceptSet and require overlap with the
+index event via nested criteria, e.g.
+`nestedWithAll(atLeast(1, visit(cs_ipVisit), duringInterval(eventStarts(-Inf, 0), endWindow = eventEnds(0, Inf))))`.
 
 | Function | Returns `conceptAttribute` with `name =` | CDM column filtered |
 |---|---|---|
@@ -620,7 +639,8 @@ Measurements may also be filtered by unit of measure.
 
 #### `valueAsConcept(ids, connection = NULL, vocabularyDatabaseSchema = NULL)`
 
-Same optional-connection signature as the Type / Status attributes above.
+Same signature as the Type / Status attributes above — and, like them, **requires a live
+`connection` in Capr 2.1.1** (errors without one despite the `NULL` default).
 **Returns:** `conceptAttribute` with `name = "ValueAsConcept"`.
 
 #### `valueAsConceptSet(conceptSet)`
@@ -640,7 +660,8 @@ Concept objects in JSON (not a `CodesetId`).
 
 #### `measurementUnit(ids, connection = NULL, vocabularyDatabaseSchema = NULL)`
 
-Same optional-connection signature as the Type / Status attributes above. `ids` is an integer
+Unlike the Type / Status attributes, `measurementUnit()` genuinely works **without** a connection
+(the `connection` is optional and only fills in the unit's concept name for Atlas). `ids` is an integer
 vector of unit concept IDs (e.g. `measurementUnit(8554L)` for percent) and is the only supported
 input — no `ConceptSet`, no unit strings (e.g. `measurementUnit("%")`), even though older Capr
 versions accepted those; errors on anything else.
@@ -679,7 +700,8 @@ attrition(
 ## Worked Examples
 
 All examples assume concept sets named `cs_*` already exist in the session as `ConceptSet`
-objects. Every example runs without error against Capr 2.1.1.
+objects. Every example runs without error against Capr 2.1.1 — except Example 9, which
+additionally requires a live database connection (see its note).
 
 ### 1. Simple entry event (single concept set, single domain)
 
@@ -966,8 +988,11 @@ inside an entry Query; `visitType()` / `conditionStatus()` to restrict a *condit
 care setting — this works only on non-visit domains, where `visitType()` filters the linked
 visit's `visit_concept_id`; on a `visit()` query the care setting goes in the ConceptSet instead
 (see "Query Attributes — Type / Status" above).
-No database connection is needed — pass `connection`/`vocabularyDatabaseSchema` only if the user
-wants concept names displayed in Atlas (see "Query Attributes — Type / Status" above).
+**Connection required:** unlike the other examples, this one does **not** run connectionless — in
+Capr 2.1.1 `visitType()` and `conditionStatus()` call `getConceptSetDetails()` and error without a
+live `connection`/`vocabularyDatabaseSchema`. Pass them, or, when you have no connection, express
+the care setting structurally via a nested `visit(cs_ipVisit)` overlap instead of `visitType()`
+(see the note under "Query Attributes — Type / Status").
 
 ### 10. Fixed-date yearly denominator cohort
 
