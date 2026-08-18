@@ -12,12 +12,15 @@ connectionDetails <- createConnectionDetails(
 cdmDatabaseSchema <- "optum_extended_dod.cdm_optum_extended_dod_v4020"
 options(sqlRenderTempEmulationSchema = "scratch.scratch_mschuemi")
 
-# Collect all concept sets from folder
+referenceCohortDatabaseSchema <- "scratch.scratch_all"
+referenceCohortProfilesTable <- "reference_cohort_profiles_optum_extended_dod_v4020"
+
+# Collect all concept sets from folder ------------------------------------------------------
 connection <- connect(connectionDetails)
 
 folder <- "../largescalephentest/phenelopeConceptSets"
 
-jsonToCapr <- function(json, target) {
+jsonToCaprWithReference <- function(json, target) {
   expression <- CirceR::conceptSetExpressionFromJson(json)
   concepts <- c()
   excludedConcepts <- c()
@@ -44,14 +47,8 @@ jsonToCapr <- function(json, target) {
       }
     }
   }
-  comment <- paste0("# Concept set for ", 
-                   target, 
-                   "\n#\n# Concept ID reference:\n", 
-                   paste0("# ", conceptIds, ": ",conceptNames, collapse = "\n"))
   hasIncludeDescendants <- length(includeDescendantConcept) > 0 || length(includeDescendantAndExcludedConcept) > 0
-  variableName <- SqlRender::snakeCaseToCamelCase(gsub("[^[:alnum:]]+", "_", target))
-  code <- paste0(variableName,
-                " <- cs(",
+  code <- paste0("cs(",
                  if (length(concepts) > 0) paste(concepts, collapse = ", ") else "",
                  if (length(concepts) > 0 && hasIncludeDescendants) ", " else "",
                  if (hasIncludeDescendants) "descendants(" else "",
@@ -64,7 +61,13 @@ jsonToCapr <- function(json, target) {
                  ", name = \"", 
                  target, 
                  "\")")
-  return(paste(comment, code, sep = "\n"))
+  reference <- lapply(seq_along(conceptIds), 
+                      function(i) list(conceptId = as.integer(conceptIds[i]),
+                                       conceptName = conceptNames[i]))
+  reference <- jsonlite::toJSON(reference,
+                                auto_unbox  = TRUE)
+  reference <- as.character(reference)
+  return(tibble(capr = code, reference = reference))
 }
 
 getCounts <- function(conceptSetSql) {
@@ -106,7 +109,7 @@ getCounts <- function(conceptSetSql) {
   return(counts)
 }
 
-# target = targets[1]
+# target = targets[2]
 processConceptSetTarget <- function(target, role, phenotype) {
   jsonFile <- file.path(folder, phenotype, role, target, sprintf("%s.json", target))
   if (!file.exists(jsonFile)) {
@@ -116,7 +119,7 @@ processConceptSetTarget <- function(target, role, phenotype) {
   json <- readLines(jsonFile)  
   json <- paste(json, collapse = "\n")
   conceptSetSql <- CirceR::buildConceptSetQuery(json)
-  capr <- jsonToCapr(json, target)
+  caprWithReference <- jsonToCaprWithReference(json, target)
   
   domains <- readr::read_csv(file.path(folder, phenotype, role, target, "domains.csv"), show_col_types = FALSE)
   domains <- paste(domains$domainId, collapse = ",")
@@ -129,14 +132,15 @@ processConceptSetTarget <- function(target, role, phenotype) {
     target = target,
     domains = domains,
     json = json,
-    sql = conceptSetSql,
-    capr = capr
+    sql = conceptSetSql
   ) |> 
+    bind_cols(caprWithReference) |>
     bind_cols(counts)
 }
 
 # role = roles[1]
 processRole <- function(role, phenotype) {
+  message(sprintf("- Processing %s - %s", phenotype, role))
   targets <- list.files(file.path(folder, phenotype, role))
   rows <- lapply(targets, processConceptSetTarget, role = role, phenotype = phenotype)
   rows <- bind_rows(rows)
@@ -157,3 +161,43 @@ rows <- bind_rows(rows)
 object.size(rows)
 saveRDS(rows, "tools/PhenelopeConceptSets.rds")
 readr::write_csv(rows, "../largescalephentest/phenelopeConceptSets/overview.csv")
+disconnect(connection)
+
+# Upload KEEPER profiles ------------------------------------------------------------------
+folder <- "../largescalephentest/AcuteLiverFailure"
+keeperProfiles <- readRDS(file.path(folder, "KeeperHsc.rds"))
+llmReviews <- readRDS(file.path(folder, "llmReviewsHsc.rds"))
+
+# group = groups[[1]]
+createRow <- function(group) {
+  llmReview <- llmReviews |>
+    filter(generatedId == group$generatedId[1])
+  profileText <- Keeper:::createPrompt(Keeper::createPromptSettings(), group)
+  row <- llmReview |>
+    select("personId", "isCase", rationale = "justification") |>
+    mutate(profile = profileText)
+  return(row)
+}
+groups <- keeperProfiles |>
+  group_by(generatedId) |>
+  group_split()
+
+rows <- lapply(groups, createRow)
+rows <- bind_rows(rows)
+rows$cohortDefinitionId <- 1 # TODO: connect this with reference table
+
+connection <- connect(connectionDetails)
+
+rows$personId <- bit64::as.integer64(rows$personId)
+insertTable(
+  connection = connection,
+  databaseSchema = referenceCohortDatabaseSchema,
+  tableName = referenceCohortProfilesTable,
+  data = rows,
+  dropTableIfExists = TRUE,
+  createTable = TRUE,
+  progressBar = TRUE,
+  camelCaseToSnakeCase = TRUE
+)
+
+disconnect(connection)

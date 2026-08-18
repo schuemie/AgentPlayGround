@@ -32,6 +32,7 @@ cohortDatabaseSchema <- "scratch.scratch_mschuemi"
 cohortTable <- "agent_test_cohort"
 referenceCohortDatabaseSchema <- "scratch.scratch_all"
 referenceCohortTable <- "reference_cohort_optum_extended_dod_v4020"
+referenceCohortProfilesTable <- "reference_cohort_profiles_optum_extended_dod_v4020"
 options(sqlRenderTempEmulationSchema = "scratch.scratch_mschuemi")
 
 
@@ -60,7 +61,7 @@ ensureCohortExists <- function(json, connection) {
     matchingCohortId <- existingCohorts |>
       filter(checksum ==  computeChecksum(sql)) |>
       pull(cohortDefinitionId)
-
+    
     if (length(matchingCohortId) == 1) {
       return(matchingCohortId)
     } else {
@@ -125,61 +126,57 @@ list_concept_sets <- tool(
              drugPersons,
              measurementPersons,
              observationPersons)
-
+    
     countCols <- c("conditionPersons", "procedurePersons", "drugPersons",
                    "measurementPersons", "observationPersons")
     domainNames <- c("Condition", "Procedure", "Drug", "Measurement", "Observation")
     countMatrix <- as.matrix(subset[countCols])
     colnames(countMatrix) <- domainNames
-
-    # One record per concept set. `recommendedDomains` flags the domain(s) worth querying:
-    # those holding at least 10% of the leading domain's person count, which surfaces concepts
-    # recorded across multiple domains (e.g. as both a condition and an observation).
+    
     records <- lapply(seq_len(nrow(subset)), function(i) {
       counts <- countMatrix[i, ]
       counts <- sort(counts[counts > 0], decreasing = TRUE)
-      recommended <- if (length(counts)) names(counts)[counts >= 0.1 * max(counts)] else character(0)
       list(
         conceptSetName = subset$conceptSetName[i],
-        domainsInVocabulary = subset$domains[i],
-        personsByDomain = as.list(counts),
-        recommendedDomains = I(recommended)
+        domainsInConceptSet = strsplit(subset$domains[i], ","),
+        personsByDomain = as.list(counts)
       )
     })
-    jsonlite::toJSON(records, auto_unbox = TRUE, pretty = TRUE)
+    json <- jsonlite::toJSON(records, auto_unbox = TRUE, pretty = TRUE)
+    return(json)
   },
+  name = "list_concept_sets",
   description = paste(
     "Retrieve the concept sets associated with a phenotype.",
     "Returns a JSON array with one record per concept set: its name (conceptSetName), the domains",
-    "where its concepts exist in the vocabulary (domainsInVocabulary), the number of unique persons",
-    "with data in each domain (personsByDomain, only nonzero domains, highest first), and",
-    "recommendedDomains \u2014 the domain(s) worth querying (those with at least 10% of the top domain's",
-    "person count). Use recommendedDomains to decide whether a concept must be queried in more than",
-    "one domain (e.g. as both a condition and an observation)."
+    "where its concepts exist in the vocabulary (domainsInConceptSet), the number of unique persons",
+    "with data in each domain (personsByDomain, only nonzero domains, highest first)."
   ),
   arguments = list(
     phenotype = type_string("Name of the phenotype for which concept sets should be returned.")
-  ),
-  name = "list_concept_sets"
+  )
 )
 
 get_concept_set_capr <- tool(
   function(phenotype, conceptSetName) {
-    capr <- conceptSets |>
+    caprWithReference <- conceptSets |>
       filter(normPhenotype == normalizeName(phenotype),
              target == conceptSetName) |>
-      pull(capr)
-    return(capr)
+      select(capr, reference)
+    json <- sprintf("{\"capr\": \"%s\", \"reference\": %s}",
+                    caprWithReference$capr,
+                    caprWithReference$reference)
+    return(json)
   },
+  name = "get_concept_set_capr",
   description = "Returns the Capr R code for a concept set.",
   arguments = list(
     phenotype = type_string("Name of the phenotype."),
     conceptSetName = type_string("Name of the concept set.")
-  ),
-  name = "get_concept_set_capr"
+  )
 )
 
-generate_cohort <- tool(
+get_cohort_count <- tool(
   function(caprCode) {
     json <- compileCaprViaWorker(caprCode)
     connection <- connect(connectionDetails)
@@ -202,34 +199,32 @@ generate_cohort <- tool(
     )
     counts <- counts |>
       mutate(database = databaseName)
-    return(counts)
+    json <- jsonlite::toJSON(counts)
+    return(json)
   },
-  description = paste(
-    "Compile a Capr cohort definition (R code) in an isolated, credential-less sandbox and",
-    "generate it in the available database(s). Returns cohort sizes."
-  ),
+  name = "get_cohort_count",
+  description = "Generate the cohort in the available database(s) (if needed) and return cohort sizes.",
   arguments = list(
     caprCode = type_string(paste(
       "A single Capr cohort definition as R code: one cohort(...) expression with all concept",
       "sets inlined and no assignments. Compiled server-side — do not pass JSON."
     ))
-  ),
-  name = "generate_cohort"
+  )
 )
 
 get_database_description <- tool(
   function(databaseName) {
     return(databaseDescription)
   },
+  name = "get_database_description",
   description = "Returns a short description of a database.",
   arguments = list(
     databaseName = type_string("Name of the database.")
-  ),
-  name = "get_database_description"
+  )
 )
 
 evaluate_cohort <- tool(
-  function(caprCode) {
+  function(caprCode, phenotype) {
     json <- compileCaprViaWorker(caprCode)
     connection <- connect(connectionDetails)
     on.exit(disconnect(connection))
@@ -248,21 +243,127 @@ evaluate_cohort <- tool(
       select("sensitivity",
              specificity = "specificityOverall",
              ppv)
-    return(metrics)
+    json <- jsonlite::toJSON(metrics, pretty = TRUE)
+    return(json)
   },
+  name = "evaluate_cohort",
   description = paste(
-    "Compile a Capr cohort definition (R code) in an isolated, credential-less sandbox and",
-    "evaluate it using a KEEPER reference cohort. Returns sensitivity, specificity, and PPV."
+    "Generate the cohort in the available database(s) (if needed) and evaluate it using",
+    "a 10,000 person KEEPER reference cohort. Returns sensitivity, specificity, and PPV."
   ),
   arguments = list(
     caprCode = type_string(paste(
       "A single Capr cohort definition as R code: one cohort(...) expression with all concept",
       "sets inlined and no assignments. Compiled server-side — do not pass JSON."
-    ))
-  ),
-  name = "evaluate_cohort"
+    )),
+    phenotype = type_string("Name of the phenotype.")
+  )
 )
 
+
+sample_patient_profile <- tool(
+  function(caprCode, phenotype, type) {
+    type <- tolower(type)
+    if (!type %in% c("tp", "fp", "tn", "fn")) {
+      return("Error: type must have value 'TP', 'FP', 'TN', or 'FN'")
+    }
+    
+    json <- compileCaprViaWorker(caprCode)
+    connection <- connect(connectionDetails)
+    on.exit(disconnect(connection))
+    
+    cohortId <- ensureCohortExists(json, connection)
+    sql <- "
+      SELECT CAST(subject_id AS VARCHAR) AS subject_id
+      FROM (
+        SELECT subject_id,
+          is_case,
+          MAX(has_match) AS has_match,
+          MAX(within_window) as within_window
+        FROM (
+          SELECT reference_cohort.subject_id,
+            is_case,
+            CASE WHEN cohort.subject_id IS NULL THEN 0 ELSE 1 END AS has_match,
+            CASE 
+              WHEN DATEDIFF(DAY, reference_cohort.cohort_start_date, cohort.cohort_start_date) <= 30
+                AND DATEDIFF(DAY, reference_cohort.cohort_start_date, cohort.cohort_start_date) >= -30
+              THEN 1 
+              ELSE 0
+            END AS within_window
+          FROM @reference_cohort_database_schema.@reference_cohort_table reference_cohort
+          LEFT JOIN @cohort_database_schema.@cohort_table cohort
+            ON reference_cohort.subject_id = cohort.subject_id
+              AND cohort.cohort_definition_id = @cohort_definition_id
+              AND cohort.cohort_start_date >= observation_period_start_date
+              AND cohort.cohort_start_date <= observation_period_end_date
+          WHERE reference_cohort.cohort_definition_id = @reference_cohort_definition_id
+            AND reference_cohort.cohort_start_date IS NOT NULL
+        ) tmp
+        GROUP BY subject_id,
+        is_case
+      ) tmp2
+      {@type == 'tp'} ? {WHERE is_case = 1 AND has_match = 1 AND within_window = 1;}
+      {@type == 'fn'} ? {WHERE is_case = 0 AND has_match = 0;}
+      {@type == 'fp'} ? {WHERE is_case = 0 AND has_match = 1 AND within_window = 1;}
+      {@type == 'fn'} ? {WHERE is_case = 1 AND has_match = 0;}
+    "
+    personIds <- renderTranslateQuerySql(
+      connection = connection,
+      sql = sql,
+      reference_cohort_database_schema = referenceCohortDatabaseSchema,
+      reference_cohort_table = referenceCohortTable,
+      reference_cohort_definition_id = 1,
+      cohort_database_schema = cohortDatabaseSchema,
+      cohort_table = cohortTable,
+      cohort_definition_id = cohortId,
+      type = type,
+      snakeCaseToCamelCase = TRUE,
+    )
+    if (nrow(personIds) == 0) {
+      return(sprintf("No patients of type '%s' found", toupper(type)))
+    }
+    personId <- sample(personIds$subjectId, size = 1)
+    
+    sql <- "
+      SELECT *
+      FROM @reference_cohort_database_schema.@reference_cohort_profiles_table
+      WHERE person_id = @person_id
+        AND cohort_definition_id = @reference_cohort_definition_id;
+    "
+    profile <- renderTranslateQuerySql(
+      connection = connection,
+      sql = sql,
+      reference_cohort_database_schema = referenceCohortDatabaseSchema,
+      reference_cohort_profiles_table = referenceCohortProfilesTable,
+      reference_cohort_definition_id = 1,
+      person_id = personId,
+      snakeCaseToCamelCase = TRUE,
+    )
+    result <- list(
+      type = toupper(type),
+      patientProfile = profile$profile,
+      rationale = profile$rationale
+    )
+    json <- jsonlite::toJSON(result, auto_unbox = TRUE, pretty = TRUE)
+    return(json)
+  },
+  name = "sample_patient_profile",
+  description = paste(
+    "Generate the cohort in the available database(s) (if needed) and return the patient profile",
+    "and rationale for one random patient in the KEEPER reference set."
+  ),
+  arguments = list(
+    caprCode = type_string(paste(
+      "A single Capr cohort definition as R code: one cohort(...) expression with all concept",
+      "sets inlined and no assignments. Compiled server-side — do not pass JSON."
+    )),
+    phenotype = type_string("Name of the phenotype. Used to fetch the gold standard."),
+    type = type_string(paste(
+      "Type, based on classification status, using the KEEPER reference cohort as gold standard.",
+      "Options: TP, FP, TN, FN"
+    ))
+  )
+)
 
 # Start the MCP server -------------------------------------------------------------------------------------------------
 # This will block the R session and listen for requests from Copilot/Claude.
@@ -270,9 +371,10 @@ mcp_server(
   tools = list(
     list_concept_sets,
     get_concept_set_capr,
-    generate_cohort,
+    get_cohort_count,
     get_database_description,
-    evaluate_cohort
+    evaluate_cohort,
+    sample_patient_profile
   ),
   session_tools = FALSE
 )
