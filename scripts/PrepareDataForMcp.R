@@ -18,7 +18,7 @@ referenceCohortProfilesTable <- "reference_cohort_profiles_optum_extended_dod_v4
 # Collect all concept sets from folder ------------------------------------------------------
 connection <- connect(connectionDetails)
 
-folder <- "../largescalephentest/phenelopeConceptSets"
+folder <- "../largescalephentest/phenelopeConceptSetsNew"
 
 jsonToCaprWithReference <- function(json, target) {
   expression <- CirceR::conceptSetExpressionFromJson(json)
@@ -72,35 +72,87 @@ jsonToCaprWithReference <- function(json, target) {
 
 getCounts <- function(conceptSetSql) {
   sql <- "
-  WITH concept_set AS (
-    @concept_set_sql
-  )
-  SELECT 
-    (
-      SELECT COUNT(DISTINCT person_id) 
-      FROM @cdm_database_schema.condition_occurrence 
-      WHERE condition_concept_id IN (SELECT concept_id FROM concept_set)
-    ) AS condition_persons,
-    (
-      SELECT COUNT(DISTINCT person_id) 
-      FROM @cdm_database_schema.procedure_occurrence 
-      WHERE procedure_concept_id IN (SELECT concept_id FROM concept_set)
-    ) AS procedure_persons,
-    (
-      SELECT COUNT(DISTINCT person_id)
+    WITH concept_set AS (
+      @concept_set_sql
+    ),
+    domain_persons AS (
+      SELECT DISTINCT
+        person_id,
+        'Condition' AS domain_id
+      FROM @cdm_database_schema.condition_occurrence
+      WHERE condition_concept_id IN (
+        SELECT concept_id
+        FROM concept_set
+      )
+       
+      UNION ALL
+       
+      SELECT DISTINCT
+        person_id,
+        'Procedure' AS domain_id
+      FROM @cdm_database_schema.procedure_occurrence
+      WHERE procedure_concept_id IN (
+       SELECT concept_id
+       FROM concept_set
+      )
+       
+      UNION ALL
+       
+      SELECT DISTINCT
+       person_id,
+        'Drug' AS domain_id
       FROM @cdm_database_schema.drug_exposure
-      WHERE drug_concept_id IN (SELECT concept_id FROM concept_set)
-    ) AS drug_persons,
-    (
-      SELECT COUNT(DISTINCT person_id)
+      WHERE drug_concept_id IN (
+       SELECT concept_id
+       FROM concept_set
+      )
+       
+      UNION ALL
+       
+      SELECT DISTINCT
+       person_id,
+        'Measurement' AS domain_id
       FROM @cdm_database_schema.measurement
-      WHERE measurement_concept_id IN (SELECT concept_id FROM concept_set)
-    ) AS measurement_persons,
-    (
-      SELECT COUNT(DISTINCT person_id)
+      WHERE measurement_concept_id IN (
+        SELECT concept_id
+        FROM concept_set
+      )
+       
+      UNION ALL
+       
+      SELECT DISTINCT
+       person_id,
+       'Observation' AS domain_id
       FROM @cdm_database_schema.observation
-      WHERE observation_concept_id IN (SELECT concept_id FROM concept_set)
-    ) AS observation_persons;"
+      WHERE observation_concept_id IN (
+        SELECT concept_id
+        FROM concept_set
+      )
+    )
+    SELECT
+      COUNT(DISTINCT CASE
+        WHEN domain_id = 'Condition' THEN person_id
+      END) AS condition_persons,
+       
+      COUNT(DISTINCT CASE
+        WHEN domain_id = 'Procedure' THEN person_id
+      END) AS procedure_persons,
+       
+      COUNT(DISTINCT CASE
+        WHEN domain_id = 'Drug' THEN person_id
+      END) AS drug_persons,
+       
+      COUNT(DISTINCT CASE
+        WHEN domain_id = 'Measurement' THEN person_id
+      END) AS measurement_persons,
+       
+      COUNT(DISTINCT CASE
+        WHEN domain_id = 'Observation' THEN person_id
+      END) AS observation_persons,
+       
+      COUNT(DISTINCT person_id) AS overall_persons
+      FROM domain_persons;
+  "
   counts <- renderTranslateQuerySql(connection = connection,
                                     sql = sql,
                                     concept_set_sql = SqlRender::render(conceptSetSql, vocabulary_database_schema = cdmDatabaseSchema),
@@ -158,9 +210,9 @@ phenotypes <- list.dirs(folder, recursive = FALSE, full.names = FALSE)
 rows <- lapply(phenotypes, processPhenotype)
 rows <- bind_rows(rows)
 
-object.size(rows)
+object.size(rows) / 1024^2
 saveRDS(rows, "tools/PhenelopeConceptSets.rds")
-readr::write_csv(rows, "../largescalephentest/phenelopeConceptSets/overview.csv")
+readr::write_csv(rows, file.path(folder, "overview.csv"))
 disconnect(connection)
 
 # Upload KEEPER profiles ------------------------------------------------------------------

@@ -120,37 +120,21 @@ list_concept_sets <- tool(
     subset <- conceptSets |>
       filter(normPhenotype == normalizeName(phenotype)) |>
       select(conceptSetName = "target",
-             domains,
-             conditionPersons,
-             procedurePersons,
-             drugPersons,
-             measurementPersons,
-             observationPersons)
+             overallPersons)
     
-    countCols <- c("conditionPersons", "procedurePersons", "drugPersons",
-                   "measurementPersons", "observationPersons")
-    domainNames <- c("Condition", "Procedure", "Drug", "Measurement", "Observation")
-    countMatrix <- as.matrix(subset[countCols])
-    colnames(countMatrix) <- domainNames
-    
-    records <- lapply(seq_len(nrow(subset)), function(i) {
-      counts <- countMatrix[i, ]
-      counts <- sort(counts[counts > 0], decreasing = TRUE)
-      list(
-        conceptSetName = subset$conceptSetName[i],
-        domainsInConceptSet = strsplit(subset$domains[i], ","),
-        personsByDomain = as.list(counts)
-      )
-    })
-    json <- jsonlite::toJSON(records, auto_unbox = TRUE, pretty = TRUE)
-    return(json)
+    table <- c("| conceptsetName | personCount |",
+               "| -------------- | ----------- |",
+               sprintf("| %s | %d |",
+                       subset$conceptSetName,
+                       subset$overallPersons))
+    table <- paste0(table, collapse = "\n")
+    return(table)
   },
   name = "list_concept_sets",
   description = paste(
     "Retrieve the concept sets associated with a phenotype.",
-    "Returns a JSON array with one record per concept set: its name (conceptSetName), the domains",
-    "where its concepts exist in the vocabulary (domainsInConceptSet), the number of unique persons",
-    "with data in each domain (personsByDomain, only nonzero domains, highest first)."
+    "Returns a markdown table with two columns: concept set name, and the number of unique persons",
+    "with at least one of the concepts in the set."
   ),
   arguments = list(
     phenotype = type_string("Name of the phenotype for which concept sets should be returned.")
@@ -161,15 +145,33 @@ get_concept_set_capr <- tool(
   function(phenotype, conceptSetName) {
     caprWithReference <- conceptSets |>
       filter(normPhenotype == normalizeName(phenotype),
-             target == conceptSetName) |>
-      select(capr, reference)
-    json <- sprintf("{\"capr\": \"%s\", \"reference\": %s}",
-                    caprWithReference$capr,
-                    caprWithReference$reference)
+             target == conceptSetName) 
+    result <- list(
+      capr = caprWithReference$capr,
+      conceptReference = "dummy"
+    )
+    if (caprWithReference$conditionPersons > 0) {
+      result$conditionPersons = caprWithReference$conditionPersons
+    }
+    if (caprWithReference$procedurePersons > 0) {
+      result$procedurePersons = caprWithReference$procedurePersons
+    }
+    if (caprWithReference$drugPersons > 0) {
+      result$drugPersons = caprWithReference$drugPersons
+    }
+    if (caprWithReference$measurementPersons > 0) {
+      result$measurementPersons = caprWithReference$measurementPersons
+    }
+    if (caprWithReference$observationPersons > 0) {
+      result$observationPersons = caprWithReference$observationPersons
+    }
+    json <- jsonlite::toJSON(result, auto_unbox = TRUE, pretty = TRUE)
+    json <- gsub("\"dummy\"", caprWithReference$reference, json)
     return(json)
   },
   name = "get_concept_set_capr",
-  description = "Returns the Capr R code for a concept set.",
+  description = paste("Returns the Capr R code for a concept set, and unique person counts per domain,",
+                      "only non-zero domains."),
   arguments = list(
     phenotype = type_string("Name of the phenotype."),
     conceptSetName = type_string("Name of the concept set.")
@@ -303,7 +305,7 @@ sample_patient_profile <- tool(
         is_case
       ) tmp2
       {@type == 'tp'} ? {WHERE is_case = 1 AND has_match = 1 AND within_window = 1;}
-      {@type == 'fn'} ? {WHERE is_case = 0 AND has_match = 0;}
+      {@type == 'tn'} ? {WHERE is_case = 0 AND has_match = 0;}
       {@type == 'fp'} ? {WHERE is_case = 0 AND has_match = 1 AND within_window = 1;}
       {@type == 'fn'} ? {WHERE is_case = 1 AND has_match = 0;}
     "
