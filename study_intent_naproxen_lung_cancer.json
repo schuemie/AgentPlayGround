@@ -1,0 +1,28 @@
+{
+  "analyses": [
+    {
+      "analytics_type": "effect_estimation",
+      "template_name": "cohort_method",
+      "parameters": {
+        "target_cohort": "new users of naproxen",
+        "treatment_cohorts": null,
+        "outcome_cohort": "lung cancer",
+        "time_at_risk": "Intent-to-treat (from exposure start through end of observation)",
+        "comparator_cohort": "new users of diclofenac",
+        "nesting_cohort": "patients with osteoarthritis"
+      }
+    },
+    {
+      "analytics_type": "effect_estimation",
+      "template_name": "self_controlled_case_series",
+      "parameters": {
+        "target_cohort": "new users of naproxen",
+        "treatment_cohorts": null,
+        "outcome_cohort": "lung cancer",
+        "time_at_risk": "Intent-to-treat (from exposure start through end of observation)",
+        "comparator_cohort": null,
+        "nesting_cohort": "patients with osteoarthritis"
+      }
+    }
+  ]
+}

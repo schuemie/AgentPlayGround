@@ -3,6 +3,10 @@
 		"ohdsi_hecate": {
 			"url": "https://hecate.pantheon-hds.com/mcp/sse",
 			"type": "http"
+		},
+		"ohdsi-question-structurer": {
+			"url": "http://127.0.0.1:8000/mcp",
+			"type": "http"
 		}
 	},
 	"inputs": []
