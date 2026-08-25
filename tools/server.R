@@ -7,6 +7,9 @@
 #     "tools/server.R"
 #   ]
 # }
+#
+# Currently requires develop version of Capr: remotes::install_github("ohdsi/Capr", ref = "develop")
+
 
 # setwd("E:/git/AgentPlayGround")
 
@@ -47,7 +50,7 @@ conceptSets <- readRDS("tools/PhenelopeConceptSets.rds") |>
 # Returns the cohort ID:
 ensureCohortExists <- function(json, connection) {
   expression <- cohortExpressionFromJson(json)
-  sql <- buildCohortQuery(expression, createGenerateOptions(generateStats = FALSE))
+  sql <- buildCohortQuery(expression, createGenerateOptions(generateStats = TRUE))
   
   cohortTableNames <- getCohortTableNames(cohortTable)
   if (existsTable(connection, cohortDatabaseSchema, cohortTable)) {
@@ -120,7 +123,8 @@ list_concept_sets <- tool(
     subset <- conceptSets |>
       filter(normPhenotype == normalizeName(phenotype)) |>
       select(conceptSetName = "target",
-             overallPersons)
+             overallPersons) |>
+      arrange(conceptSetName)
     
     table <- c("| conceptsetName | personCount |",
                "| -------------- | ----------- |",
@@ -142,31 +146,41 @@ list_concept_sets <- tool(
 )
 
 get_concept_set_capr <- tool(
-  function(phenotype, conceptSetName) {
+  function(phenotype, conceptSetName, detail = "code_and_counts") {
+    if (!detail %in% c("code", "code_and_counts", "full_reference")) {
+      stop("The detail argument should be 'code', 'code_and_counts', or 'full_reference'")
+    }
     caprWithReference <- conceptSets |>
       filter(normPhenotype == normalizeName(phenotype),
-             target == conceptSetName) 
+             target == conceptSetName) |>
+      head(1) # Only allowing 1 definition per concept set
     result <- list(
-      capr = caprWithReference$capr,
-      conceptReference = "dummy"
+      capr = caprWithReference$capr
     )
-    if (caprWithReference$conditionPersons > 0) {
-      result$conditionPersons = caprWithReference$conditionPersons
+    if (detail %in% c("code_and_counts", "full_reference")) {
+      if (caprWithReference$conditionPersons > 0) {
+        result$conditionPersons = caprWithReference$conditionPersons
+      }
+      if (caprWithReference$procedurePersons > 0) {
+        result$procedurePersons = caprWithReference$procedurePersons
+      }
+      if (caprWithReference$drugPersons > 0) {
+        result$drugPersons = caprWithReference$drugPersons
+      }
+      if (caprWithReference$measurementPersons > 0) {
+        result$measurementPersons = caprWithReference$measurementPersons
+      }
+      if (caprWithReference$observationPersons > 0) {
+        result$observationPersons = caprWithReference$observationPersons
+      }
     }
-    if (caprWithReference$procedurePersons > 0) {
-      result$procedurePersons = caprWithReference$procedurePersons
-    }
-    if (caprWithReference$drugPersons > 0) {
-      result$drugPersons = caprWithReference$drugPersons
-    }
-    if (caprWithReference$measurementPersons > 0) {
-      result$measurementPersons = caprWithReference$measurementPersons
-    }
-    if (caprWithReference$observationPersons > 0) {
-      result$observationPersons = caprWithReference$observationPersons
+    if (detail == "full_reference") {
+      result$conceptReference <- "dummy"
     }
     json <- jsonlite::toJSON(result, auto_unbox = TRUE, pretty = TRUE)
-    json <- gsub("\"dummy\"", caprWithReference$reference, json)
+    if (detail == "full_reference") {
+      json <- gsub("\"dummy\"", caprWithReference$reference, json)
+    }
     return(json)
   },
   name = "get_concept_set_capr",
@@ -174,7 +188,35 @@ get_concept_set_capr <- tool(
                       "only non-zero domains."),
   arguments = list(
     phenotype = type_string("Name of the phenotype."),
-    conceptSetName = type_string("Name of the concept set.")
+    conceptSetName = type_string("Name of the concept set."),
+    detail = type_enum(c("code", "code_and_counts", "full_reference"), 
+                       paste("Level of detail to return.",
+                             "'code' returns the Capr code,",
+                             "'code_and_counts' additionally returns person count per domain, and",
+                             "'full_reference' also includes a reference for the concept IDs used in the code.")
+    )
+  )
+)
+
+validate_capr <- tool(
+  function(caprCode) {
+    result <- tryCatch({
+      compileCaprViaWorker(caprCode)
+      "Valid"
+    },
+    error = function(e) {
+      return(paste("Error:", e$parent$message))
+    }
+    )
+    return(result)
+  },
+  name = "validate_capr",
+  description = "Validate the provided Capr code. Either returns 'Valid' or an informative error message.",
+  arguments = list(
+    caprCode = type_string(paste(
+      "A single Capr cohort definition as R code: one cohort(...) expression with all concept",
+      "sets inlined and no assignments. Compiled server-side — do not pass JSON."
+    ))
   )
 )
 
@@ -185,27 +227,53 @@ get_cohort_count <- tool(
     on.exit(disconnect(connection))
     
     cohortId <- ensureCohortExists(json, connection)
-    sql <- "
+    
+    expression <- jsonlite::fromJSON(json)
+    inclusionRules <- expression$InclusionRules
+    
+    if (nrow(inclusionRules) > 0) {
+      inclusionRules <- inclusionRules |> 
+        transmute(cohortDefinitionId = cohortId, ruleSequence = row_number() -1, name)
+      
+      stats <- getCohortStats(
+        connection = connection,
+        cohortDatabaseSchema = cohortDatabaseSchema,
+        outputTables = "cohortInclusionResultTable",
+        cohortTableNames = getCohortTableNames(cohortTable)
+      )
+      inclusionRules <- bind_rows(inclusionRules, 
+                                  tibble(cohortDefinitionId = cohortId, 
+                                         ruleSequence = -1,
+                                         name = "Initial event"))
+      counts <- computeCohortAttrition(stats$cohortInclusionResultTable, inclusionRules) |>
+        filter(modeId == 0, cohortEntry == 0) |>
+        inner_join(inclusionRules, by = join_by(cohortDefinitionId, ruleSequence)) |>
+        mutate(ruleSequence  = ruleSequence + 1) |>
+        select(ruleSequence, name, personCount)
+    } else {
+      sql <- "
       SELECT COUNT(DISTINCT subject_id) AS person_count, 
         COUNT(*) AS entry_count 
       FROM @cohort_database_schema.@cohort_table 
       WHERE cohort_definition_id = @cohort_id;
-    "
-    counts <- renderTranslateQuerySql(
-      connection = connection,
-      sql = sql,
-      cohort_database_schema = cohortDatabaseSchema,
-      cohort_table = cohortTable,
-      cohort_id = cohortId,
-      snakeCaseToCamelCase = TRUE
-    )
+    "    
+      counts <- renderTranslateQuerySql(
+        connection = connection,
+        sql = sql,
+        cohort_database_schema = cohortDatabaseSchema,
+        cohort_table = cohortTable,
+        cohort_id = cohortId,
+        snakeCaseToCamelCase = TRUE
+      )
+    }
     counts <- counts |>
       mutate(database = databaseName)
     json <- jsonlite::toJSON(counts)
     return(json)
   },
   name = "get_cohort_count",
-  description = "Generate the cohort in the available database(s) (if needed) and return cohort sizes.",
+  description = paste("Generate the cohort in the available database(s) (if needed) and return cohort sizes.",
+                      "If the cohort has attrition rules, counts after applying each rule will be returned as well."),
   arguments = list(
     caprCode = type_string(paste(
       "A single Capr cohort definition as R code: one cohort(...) expression with all concept",
@@ -375,6 +443,7 @@ mcp_server(
     get_concept_set_capr,
     get_cohort_count,
     get_database_description,
+    validate_capr,
     evaluate_cohort,
     sample_patient_profile
   ),

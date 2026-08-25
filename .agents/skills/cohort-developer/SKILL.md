@@ -17,7 +17,7 @@ Data in observational healthcare databases (insurance claims, electronic health 
 
 - Requires a **clinical definition** of the phenotype, describing the clinical intent (the "what"). If a clinical definition is not provided, launch the interactive `clinical-definition-refiner` first.
 - Requires the **phenotype name**. If not provided, derive it from the clinical definition.
-- **Reference Material:** Read `CAPR_REFERENCE.md` (part of the capr-cohort-implementer skill) to understand the exact structure and syntax of Capr cohort definitions in R.
+- **Reference Material:** Read `CAPR_REFERENCE.md` (in the same folder as this file) to understand the exact structure and syntax of Capr cohort definitions in R.
 
 ## Agent Workflow
 
@@ -36,3 +36,16 @@ Think about how a phenotype plays out in a real-world healthcare setting:
 * What interactions would the patient have with the healthcare system before, during, and after onset? 
 * What diagnoses, visits, procedures, or prescriptions would be recorded in *both* administrative claims and EHRs? 
 * Leverage Capr's structure to balance logic. Aim for a Positive Predictive Value (PPV) and sensitivity greater than 80%.
+
+## Capr rules
+
+1. **Use only functions and arguments documented in `CAPR_REFERENCE.md`.** If something seems
+   missing, say so — do not improvise API.
+2. **Never write a concept ID from memory.** This includes clinical concepts and type / unit /
+   status / provider-specialty IDs. Use the Hecate tools if needed to find individual concepts.
+3. Concept sets **must** be constructed using the create_concept_set tool. This tool generates
+   Capr code that can be added to the overall code. 
+4. **Say so when the cohort is not expressible in Capr/Circe.** Check every request against the
+   wrong-tool signals in `CAPR_REFERENCE.md` before writing code. A definition that compiles but
+   means something different from what the user asked for is worse than no code — never deliver
+   a silent approximation; state the mismatch and propose the decomposition pattern instead.
