@@ -7,7 +7,7 @@ Description: >
 
 # Develop a cohort for a given phenotype
 
-Based on the clinical definition of a phenotype, develop an operational definition that can be executed against a database in the OMOP Common Data Model (CDM). The implementation uses the Capr R package. The `generate_cohort` and `evaluate_cohort` tools compile the Capr definition to OMOP JSON **server-side**, so you submit Capr R code — not JSON — to them.
+Based on the Clinical Definition of a phenotype, develop an operational definition that can be executed against a database in the OMOP Common Data Model (CDM). The implementation uses the Capr R package. The `generate_cohort` and `evaluate_cohort` tools compile the Capr definition to OMOP JSON **server-side**, so you submit Capr R code — not JSON — to them.
 
 ## Background
 
@@ -15,7 +15,7 @@ Data in observational healthcare databases (insurance claims, electronic health 
 
 ## Prerequisites
 
-- Requires a **clinical definition** of the phenotype, describing the clinical intent (the "what"). If a clinical definition is not provided, launch the interactive `clinical-definition-refiner` first.
+- Requires a **Clinical Definition** of the phenotype, describing the clinical intent (the "what"). If a clinical definition is not provided, launch the interactive `clinical-definition-refiner` first.
 - Requires the **phenotype name**. If not provided, derive it from the clinical definition.
 - **Reference Material:** Read `CAPR_REFERENCE.md` (in the same folder as this file) to understand the exact structure and syntax of Capr cohort definitions in R.
 
@@ -24,17 +24,18 @@ Data in observational healthcare databases (insurance claims, electronic health 
 1. **Retrieve available concept sets**. Use the `list_concept_sets` tool to identify relevant OMOP concept sets for the phenotype. Use `get_concept_set_capr` to fetch each one's Capr `cs(...)` code.
 1. **Conceptual Design:** Develop an initial best-guess cohort definition based on clinical knowledge. Outline the required OMOP concept sets (diagnoses, procedures, drugs) and the temporal logic.
 2. **Implementation:** Write the R code using the Capr package to define the cohort (see `CAPR_REFERENCE.md`). You do **not** compile to JSON yourself — the evaluation tools do that server-side.
-3. **Evaluation:** Pass the **Capr cohort definition as R code** to the `generate_cohort` tool (the `caprCode` argument) to get cohort counts across available databases. If the counts seem reasonable, call the `evaluate_cohort` tool (same `caprCode` argument) to get a summary of the cohort's operating characteristics. To understand the performance, you can call the `sample_patient_profile` tool (same `caprCode` argument) to review individual patient profiles.
+3. **Evaluation:** Pass the **Capr cohort definition as R code** to the `generate_cohort` tool (the `caprCode` argument) to get cohort counts across available databases. If the counts seem reasonable, call the `evaluate_cohort` tool (same `caprCode` argument) to get a summary of the cohort's operating characteristics. To understand the performance, call the `sample_patient_profile` tool (same `caprCode` argument) to review individual patient profiles.
    - **Submission format (required):** `caprCode` must be a **single `cohort(...)` expression** with every concept set **inlined** as the first argument of its domain query, and **no assignments or helper variables**. The tool compiles it in an isolated sandbox that rejects anything outside the documented Capr API (no `<-`, `::`, `system`, `eval`, file/network calls, etc.). Do **not** pass JSON.
    - Each `cs(...)` snippet from `get_concept_set_capr` needs a `name = "..."` added when you inline it (Capr requires it).
-4. **Iteration:** Adjust the cohort definition based on evaluation results.
+4. **Iteration:** Adjust the cohort definition based on counts, evaluation results, and sample patient profiles.
 5. **Termination & Output:** Stop when the operating characteristics are sufficient, OR after a maximum of 3 evaluation attempts. Present the user with the final Capr R code and a summary of the evaluation results. (If the user wants the OMOP JSON, produce it locally with `compile()` / `writeCohort()`; the evaluation tools do not return it.)
 
 ## Heuristics for Initial Design
 
-Think about how a phenotype plays out in a real-world healthcare setting:
+Think about how the phenotype plays out in a real-world healthcare setting:
 * What interactions would the patient have with the healthcare system before, during, and after onset? 
 * What diagnoses, visits, procedures, or prescriptions would be recorded in *both* administrative claims and EHRs? 
+* What operational definition would accurately reflect the phenotype as described in the Clinical Definition ?
 * Leverage Capr's structure to balance logic. Aim for a Positive Predictive Value (PPV) and sensitivity greater than 80%.
 
 ## Capr rules
@@ -43,7 +44,7 @@ Think about how a phenotype plays out in a real-world healthcare setting:
    missing, say so — do not improvise API.
 2. **Never write a concept ID from memory.** This includes clinical concepts and type / unit /
    status / provider-specialty IDs. Use the Hecate tools if needed to find individual concepts.
-3. Concept sets **must** be constructed using the create_concept_set tool. This tool generates
+3. Concept sets **must** be constructed using the `get_concept_set_capr` tool. This tool generates
    Capr code that can be added to the overall code. 
 4. **Say so when the cohort is not expressible in Capr/Circe.** Check every request against the
    wrong-tool signals in `CAPR_REFERENCE.md` before writing code. A definition that compiles but

@@ -223,6 +223,7 @@ validate_capr <- tool(
 get_cohort_count <- tool(
   function(caprCode) {
     json <- compileCaprViaWorker(caprCode)
+    
     connection <- connect(connectionDetails)
     on.exit(disconnect(connection))
     
@@ -234,29 +235,38 @@ get_cohort_count <- tool(
     if (nrow(inclusionRules) > 0) {
       inclusionRules <- inclusionRules |> 
         transmute(cohortDefinitionId = cohortId, ruleSequence = row_number() -1, name)
-      
-      stats <- getCohortStats(
+      sql <- "
+        SELECT * 
+        FROM @cohort_database_schema.@table 
+        WHERE cohort_definition_id = @cohort_id;
+      "
+      inclusionResults <- renderTranslateQuerySql(
         connection = connection,
-        cohortDatabaseSchema = cohortDatabaseSchema,
-        outputTables = "cohortInclusionResultTable",
-        cohortTableNames = getCohortTableNames(cohortTable)
+        sql = sql,
+        cohort_database_schema = cohortDatabaseSchema,
+        table = getCohortTableNames(cohortTable)$cohortInclusionResultTable,
+        cohort_id = cohortId,
+        snakeCaseToCamelCase = TRUE
       )
+      
       inclusionRules <- bind_rows(inclusionRules, 
                                   tibble(cohortDefinitionId = cohortId, 
                                          ruleSequence = -1,
                                          name = "Initial event"))
-      counts <- computeCohortAttrition(stats$cohortInclusionResultTable, inclusionRules) |>
+      counts <- computeCohortAttrition(inclusionResults, inclusionRules) |>
         filter(modeId == 0, cohortEntry == 0) |>
-        inner_join(inclusionRules, by = join_by(cohortDefinitionId, ruleSequence)) |>
+        right_join(inclusionRules, by = join_by(cohortDefinitionId, ruleSequence)) |>
         mutate(ruleSequence  = ruleSequence + 1) |>
-        select(ruleSequence, name, personCount)
+        select(ruleSequence, name, personCount) |>
+        mutate(personCount = if_else(is.na(personCount), 0, personCount)) |>
+        arrange(ruleSequence)
     } else {
       sql <- "
-      SELECT COUNT(DISTINCT subject_id) AS person_count, 
-        COUNT(*) AS entry_count 
-      FROM @cohort_database_schema.@cohort_table 
-      WHERE cohort_definition_id = @cohort_id;
-    "    
+        SELECT COUNT(DISTINCT subject_id) AS person_count, 
+          COUNT(*) AS entry_count 
+        FROM @cohort_database_schema.@cohort_table 
+        WHERE cohort_definition_id = @cohort_id;
+      "    
       counts <- renderTranslateQuerySql(
         connection = connection,
         sql = sql,
@@ -312,14 +322,19 @@ evaluate_cohort <- tool(
     metrics <- metrics |>
       select("sensitivity",
              specificity = "specificityOverall",
-             ppv)
+             ppv,
+             tp,
+             fp,
+             tn,
+             fn)
     json <- jsonlite::toJSON(metrics, pretty = TRUE)
     return(json)
   },
   name = "evaluate_cohort",
   description = paste(
     "Generate the cohort in the available database(s) (if needed) and evaluate it using",
-    "a 10,000 person KEEPER reference cohort. Returns sensitivity, specificity, and PPV."
+    "a 10,000 person KEEPER reference cohort.",
+    "Returns sensitivity, specificity (adjusted for sampling), PPV, and the confusion matrix."
   ),
   arguments = list(
     caprCode = type_string(paste(
@@ -420,7 +435,8 @@ sample_patient_profile <- tool(
   name = "sample_patient_profile",
   description = paste(
     "Generate the cohort in the available database(s) (if needed) and return the patient profile",
-    "and rationale for one random patient in the KEEPER reference set."
+    "and rationale for one random patient in the KEEPER reference set.",
+    "Call multiple times to sample multiple patients."
   ),
   arguments = list(
     caprCode = type_string(paste(
