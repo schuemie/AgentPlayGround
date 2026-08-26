@@ -220,6 +220,57 @@ validate_capr <- tool(
   )
 )
 
+convert_capr_to_json <- tool(
+  function(caprCode) {
+    json <- compileCaprViaWorker(caprCode)
+    
+    # Add concept information:
+    connection <- connect(connectionDetails)
+    on.exit(disconnect(connection))
+    
+    conceptIds <- str_match_all(json, '"CONCEPT_ID"\\s*:\\s*(\\d+)')[[1]][, 2] 
+    conceptIds <- unique(as.integer(conceptIds))
+    sql <- "
+      SELECT *
+      FROM @cdm_database_schema.concept
+      WHERE concept_id IN (@concept_ids);
+    "
+    concepts <- renderTranslateQuerySql(
+      connection = connection,
+      sql = sql,
+      cdm_database_schema = cdmDatabaseSchema,
+      concept_ids = conceptIds
+    )
+    colnames(concepts) <- toupper(colnames(concepts))
+    # Required by ATLAS:
+    concepts <- concepts |>
+      mutate(STANDARD_CONCEPT_CAPTION = if_else(STANDARD_CONCEPT == "S", 
+                                                "Standard", 
+                                                if_else(STANDARD_CONCEPT == "C", 
+                                                        "Classification",
+                                                        "Non-Standard")))
+    # concept = split(concepts, concepts$CONCEPT_ID)[[1]]
+    for (concept in split(concepts, concepts$CONCEPT_ID)) {
+      conceptJson <- jsonlite::toJSON(concept)
+      conceptJson <- gsub('\\]$', '', gsub('^\\[', '"concept": ', conceptJson))
+      json <-gsub(paste0('"concept": \\{[^}]*"CONCEPT_ID"\\s*:\\s*',concept$CONCEPT_ID,'[^}]*\\}'),
+                  conceptJson,
+                  json)
+    }
+    
+    return(json)
+  },
+  name = "convert_capr_to_json",
+  description = paste("Convert Capr code to JSON, including full concept information.",
+                      "(This can be a lot of text)."),
+  arguments = list(
+    caprCode = type_string(paste(
+      "A single Capr cohort definition as R code: one cohort(...) expression with all concept",
+      "sets inlined and no assignments. Compiled server-side — do not pass JSON."
+    ))
+  )
+)
+
 get_cohort_count <- tool(
   function(caprCode) {
     json <- compileCaprViaWorker(caprCode)
@@ -322,11 +373,11 @@ evaluate_cohort <- tool(
     metrics <- metrics |>
       select("sensitivity",
              specificity = "specificityOverall",
-             ppv,
-             tp,
-             fp,
-             tn,
-             fn)
+             "ppv",
+             "tp",
+             "fp",
+             "tn",
+             "fn")
     json <- jsonlite::toJSON(metrics, pretty = TRUE)
     return(json)
   },
@@ -344,7 +395,6 @@ evaluate_cohort <- tool(
     phenotype = type_string("Name of the phenotype.")
   )
 )
-
 
 sample_patient_profile <- tool(
   function(caprCode, phenotype, type) {
@@ -444,7 +494,7 @@ sample_patient_profile <- tool(
       "sets inlined and no assignments. Compiled server-side — do not pass JSON."
     )),
     phenotype = type_string("Name of the phenotype. Used to fetch the gold standard."),
-    type = type_string(paste(
+    type = type_enum(c("TP", "FP", "TN", "FN"), paste(
       "Type, based on classification status, using the KEEPER reference cohort as gold standard.",
       "Options: TP, FP, TN, FN"
     ))
@@ -460,6 +510,7 @@ mcp_server(
     get_cohort_count,
     get_database_description,
     validate_capr,
+    convert_capr_to_json,
     evaluate_cohort,
     sample_patient_profile
   ),
