@@ -29,7 +29,7 @@ Data in observational healthcare databases (insurance claims, electronic health 
 4. **Cohort Generation** Pass the **Capr cohort definition as R code** to the `generate_cohort` tool to instantiate the cohort in the database. This tools returns a cohort ID.
 5. **Evaluation:** Call the `get_cohort_count` tool with the concept ID get cohort counts (split by inclusion rules if present). If the counts seem unreasonable (e.g. they are 0), go back to step 2. Else call the `evaluate_cohort` tool (same `conceptId` argument) to get a summary of the cohort's operating characteristics. To understand the performance, call the `sample_patient_profile` tool (same `conceptId` argument) to review individual patient profiles.
 6. **Iteration:** Adjust the cohort definition based on counts, evaluation results, and sample patient profiles.
-7. **Termination & Output:** Stop when the operating characteristics are sufficient, OR after a maximum of 3 evaluation attempts. Present the user with the final Capr R code and a summary of the evaluation results. (If the user wants the OMOP JSON, produce it locally with `compile()` / `writeCohort()`; the evaluation tools do not return it.)
+7. **Termination & Output:** Stop when the operating characteristics are sufficient, OR after a maximum of 3 evaluation attempts. Present the user with the final Capr R code and a summary of the evaluation results. (If the user wants the OMOP JSON, produce it with the `convert_capr_to_json` tool, saving it to file immediately. There is no need to verify the JSON.)
 
 ## Heuristics for Initial Design
 
