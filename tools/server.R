@@ -267,7 +267,7 @@ convert_capr_to_json <- tool(
     for (concept in split(concepts, concepts$CONCEPT_ID)) {
       conceptJson <- jsonlite::toJSON(concept)
       conceptJson <- gsub('\\]$', '', gsub('^\\[', '"concept": ', conceptJson))
-      json <-gsub(paste0('"concept": \\{[^}]*"CONCEPT_ID"\\s*:\\s*',concept$CONCEPT_ID,'[^}]*\\}'),
+      json <-gsub(paste0('"concept":\\s*\\{[^}]*"CONCEPT_ID"\\s*:\\s*',concept$CONCEPT_ID,'[^}]*\\}'),
                   conceptJson,
                   json)
     }
