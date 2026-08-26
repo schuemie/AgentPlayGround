@@ -21,14 +21,15 @@ Data in observational healthcare databases (insurance claims, electronic health 
 
 ## Agent Workflow
 
-1. **Retrieve available concept sets**. Use the `list_concept_sets` tool to identify relevant OMOP concept sets for the phenotype. Use `get_concept_set_capr` to fetch each one's Capr `cs(...)` code.
-1. **Conceptual Design:** Develop an initial best-guess cohort definition based on clinical knowledge. Outline the required OMOP concept sets (diagnoses, procedures, drugs) and the temporal logic.
-2. **Implementation:** Write the R code using the Capr package to define the cohort (see `CAPR_REFERENCE.md`). You do **not** compile to JSON yourself — the evaluation tools do that server-side.
-3. **Evaluation:** Pass the **Capr cohort definition as R code** to the `generate_cohort` tool (the `caprCode` argument) to get cohort counts across available databases. If the counts seem reasonable, call the `evaluate_cohort` tool (same `caprCode` argument) to get a summary of the cohort's operating characteristics. To understand the performance, call the `sample_patient_profile` tool (same `caprCode` argument) to review individual patient profiles.
-   - **Submission format (required):** `caprCode` must be a **single `cohort(...)` expression** with every concept set **inlined** as the first argument of its domain query, and **no assignments or helper variables**. The tool compiles it in an isolated sandbox that rejects anything outside the documented Capr API (no `<-`, `::`, `system`, `eval`, file/network calls, etc.). Do **not** pass JSON.
-   - Each `cs(...)` snippet from `get_concept_set_capr` needs a `name = "..."` added when you inline it (Capr requires it).
-4. **Iteration:** Adjust the cohort definition based on counts, evaluation results, and sample patient profiles.
-5. **Termination & Output:** Stop when the operating characteristics are sufficient, OR after a maximum of 3 evaluation attempts. Present the user with the final Capr R code and a summary of the evaluation results. (If the user wants the OMOP JSON, produce it locally with `compile()` / `writeCohort()`; the evaluation tools do not return it.)
+1. **Retrieve available concept sets** Use the `list_concept_sets` tool to identify relevant OMOP concept sets for the phenotype and their person counts. Concept sets with 0 counts are likely unhelpful.
+2. **Conceptual Design:** Develop an initial best-guess cohort definition based on clinical knowledge and the available concept sets. Outline the required concept sets (diagnoses, procedures, drugs) and the temporal logic. Use `get_concept_sets_capr` to fetch Capr `cs(...)` code and per-domain person counts for the concept sets you think you need.
+3. **Implementation:** Write the R code using the Capr package to define the cohort (see `CAPR_REFERENCE.md`). You do **not** compile to JSON yourself — the evaluation tools do that server-side. You can use the `validate_capr` tool to validate the code if needed.
+	- **Submission format (required):** `caprCode` must be a **single `cohort(...)` expression** with every concept set **inlined** as the first argument of its domain query, and **no assignments or helper variables**. The tool compiles it in an isolated sandbox that rejects anything outside the documented Capr API (no `<-`, `::`, `system`, `eval`, file/network calls, etc.). Do **not** pass JSON.
+	- Each `cs(...)` snippet from `get_concept_set_capr` needs a `name = "..."` added when you inline it (Capr requires it).
+4. **Cohort Generation** Pass the **Capr cohort definition as R code** to the `generate_cohort` tool to instantiate the cohort in the database. This tools returns a cohort ID.
+5. **Evaluation:** Call the `get_cohort_count` tool with the concept ID get cohort counts (split by inclusion rules if present). If the counts seem unreasonable (e.g. they are 0), go back to step 2. Else call the `evaluate_cohort` tool (same `conceptId` argument) to get a summary of the cohort's operating characteristics. To understand the performance, call the `sample_patient_profile` tool (same `conceptId` argument) to review individual patient profiles.
+6. **Iteration:** Adjust the cohort definition based on counts, evaluation results, and sample patient profiles.
+7. **Termination & Output:** Stop when the operating characteristics are sufficient, OR after a maximum of 3 evaluation attempts. Present the user with the final Capr R code and a summary of the evaluation results. (If the user wants the OMOP JSON, produce it locally with `compile()` / `writeCohort()`; the evaluation tools do not return it.)
 
 ## Heuristics for Initial Design
 

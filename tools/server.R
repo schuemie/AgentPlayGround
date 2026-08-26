@@ -20,6 +20,7 @@ library(CirceR)
 library(DatabaseConnector)
 library(Keeper)
 library(CohortGenerator)
+library(stringr)
 
 connectionDetails <- createConnectionDetails(
   dbms = "spark",
@@ -81,7 +82,8 @@ ensureCohortExists <- function(json, connection) {
   cohortDefinitionSet <- tibble(
     cohortId = nextCohortId,
     cohortName = paste("Cohort", nextCohortId),
-    sql = sql
+    sql = sql,
+    json = json
   )
   generateCohortSet(
     connection = connection,
@@ -90,6 +92,12 @@ ensureCohortExists <- function(json, connection) {
     cohortTableNames = cohortTableNames,
     cohortDefinitionSet = cohortDefinitionSet,
     incremental = TRUE,
+  )
+  insertInclusionRuleNames(
+    connection = connection,
+    cohortDatabaseSchema = cohortDatabaseSchema,
+    cohortDefinitionSet = cohortDefinitionSet,
+    cohortInclusionTable = cohortTableNames$cohortInclusionTable
   )
   return(nextCohortId)
 }
@@ -138,57 +146,63 @@ list_concept_sets <- tool(
   description = paste(
     "Retrieve the concept sets associated with a phenotype.",
     "Returns a markdown table with two columns: concept set name, and the number of unique persons",
-    "with at least one of the concepts in the set."
+    "with at least one of the concepts in the set.",
+    "A count of 0 means nobody has any of the concepts."
   ),
   arguments = list(
     phenotype = type_string("Name of the phenotype for which concept sets should be returned.")
   )
 )
 
-get_concept_set_capr <- tool(
-  function(phenotype, conceptSetName, detail = "code_and_counts") {
+get_concept_sets_capr <- tool(
+  function(phenotype, conceptSetNames, detail = "code_and_counts") {
     if (!detail %in% c("code", "code_and_counts", "full_reference")) {
       stop("The detail argument should be 'code', 'code_and_counts', or 'full_reference'")
     }
     caprWithReference <- conceptSets |>
       filter(normPhenotype == normalizeName(phenotype),
-             target == conceptSetName) |>
-      head(1) # Only allowing 1 definition per concept set
-    result <- list(
-      capr = caprWithReference$capr
-    )
+             target %in% conceptSetNames)
+    
+    # Only allowing 1 definition per concept set:
+    caprWithReference <- caprWithReference |>
+      group_by(target) |>
+      filter(row_number() == 1) |> 
+      ungroup() 
+    
+    # Ensure same order as input:
+    caprWithReference <- caprWithReference |>
+      inner_join(tibble(target = conceptSetNames,
+                        order = seq_along(conceptSetNames)), by = join_by(target)) |>
+      arrange(order) |>
+      select(-order)
+    
+    columnsToInclude <- c("capr")
     if (detail %in% c("code_and_counts", "full_reference")) {
-      if (caprWithReference$conditionPersons > 0) {
-        result$conditionPersons = caprWithReference$conditionPersons
-      }
-      if (caprWithReference$procedurePersons > 0) {
-        result$procedurePersons = caprWithReference$procedurePersons
-      }
-      if (caprWithReference$drugPersons > 0) {
-        result$drugPersons = caprWithReference$drugPersons
-      }
-      if (caprWithReference$measurementPersons > 0) {
-        result$measurementPersons = caprWithReference$measurementPersons
-      }
-      if (caprWithReference$observationPersons > 0) {
-        result$observationPersons = caprWithReference$observationPersons
-      }
-    }
+      columnsToInclude <- c(columnsToInclude, "conditionPersons", "procedurePersons", "drugPersons", "measurementPersons", "observationPersons")    }
     if (detail == "full_reference") {
-      result$conceptReference <- "dummy"
+      columnsToInclude <- c(columnsToInclude, "conceptReference")
+      caprWithReference <- caprWithReference |>
+        mutate(conceptReference = paste("dummy", row_number()))
     }
+    result <- caprWithReference[, columnsToInclude]
     json <- jsonlite::toJSON(result, auto_unbox = TRUE, pretty = TRUE)
+    
+    # Remove 0 counts:
+    json <- gsub(",\n  }", "\n  }", gsub('\n[^:]+Persons": 0,?', "", json))
+    
     if (detail == "full_reference") {
-      json <- gsub("\"dummy\"", caprWithReference$reference, json)
+      for (i in seq_len(nrow(caprWithReference))) {
+        json <- gsub(sprintf('"dummy %s"', i), caprWithReference$reference[i], json)
+      }
     }
     return(json)
   },
-  name = "get_concept_set_capr",
-  description = paste("Returns the Capr R code for a concept set, and unique person counts per domain,",
-                      "only non-zero domains."),
+  name = "get_concept_sets_capr",
+  description = paste("Returns the Capr R code for one or more concept sets, and unique person counts per domain",
+                      "(only non-zero domains)."),
   arguments = list(
     phenotype = type_string("Name of the phenotype."),
-    conceptSetName = type_string("Name of the concept set."),
+    conceptSetNames = type_array(type_string("Names of the concept sets.")),
     detail = type_enum(c("code", "code_and_counts", "full_reference"), 
                        paste("Level of detail to return.",
                              "'code' returns the Capr code,",
@@ -228,7 +242,7 @@ convert_capr_to_json <- tool(
     connection <- connect(connectionDetails)
     on.exit(disconnect(connection))
     
-    conceptIds <- str_match_all(json, '"CONCEPT_ID"\\s*:\\s*(\\d+)')[[1]][, 2] 
+    conceptIds <- stringr::str_match_all(json, '"CONCEPT_ID"\\s*:\\s*(\\d+)')[[1]][, 2] 
     conceptIds <- unique(as.integer(conceptIds))
     sql <- "
       SELECT *
@@ -271,21 +285,46 @@ convert_capr_to_json <- tool(
   )
 )
 
-get_cohort_count <- tool(
+generate_cohort <- tool(
   function(caprCode) {
     json <- compileCaprViaWorker(caprCode)
     
     connection <- connect(connectionDetails)
-    on.exit(disconnect(connection))
+    on.exit(disconnect(connection))   
     
     cohortId <- ensureCohortExists(json, connection)
+    return(cohortId)
+  },
+  name = "generate_cohort",
+  description = "Generate the cohort in the available database(s) and return the cohort ID.",
+  arguments = list(
+    caprCode = type_string(paste(
+      "A single Capr cohort definition as R code: one cohort(...) expression with all concept",
+      "sets inlined and no assignments. Compiled server-side — do not pass JSON."
+    ))
+  )
+)
+
+get_cohort_count <- tool(
+  function(cohortId) {
+    connection <- connect(connectionDetails)
+    on.exit(disconnect(connection))
     
-    expression <- jsonlite::fromJSON(json)
-    inclusionRules <- expression$InclusionRules
+    sql <- "
+        SELECT * 
+        FROM @cohort_database_schema.@table 
+        WHERE cohort_definition_id = @cohort_id;
+      "
+    inclusionRules <- renderTranslateQuerySql(
+      connection = connection,
+      sql = sql,
+      cohort_database_schema = cohortDatabaseSchema,
+      table = getCohortTableNames(cohortTable)$cohortInclusionTable,
+      cohort_id = cohortId,
+      snakeCaseToCamelCase = TRUE
+    ) 
     
     if (nrow(inclusionRules) > 0) {
-      inclusionRules <- inclusionRules |> 
-        transmute(cohortDefinitionId = cohortId, ruleSequence = row_number() -1, name)
       sql <- "
         SELECT * 
         FROM @cohort_database_schema.@table 
@@ -333,13 +372,10 @@ get_cohort_count <- tool(
     return(json)
   },
   name = "get_cohort_count",
-  description = paste("Generate the cohort in the available database(s) (if needed) and return cohort sizes.",
+  description = paste("Return cohort sizes.",
                       "If the cohort has attrition rules, counts after applying each rule will be returned as well."),
   arguments = list(
-    caprCode = type_string(paste(
-      "A single Capr cohort definition as R code: one cohort(...) expression with all concept",
-      "sets inlined and no assignments. Compiled server-side — do not pass JSON."
-    ))
+    cohortId = type_integer("The cohort ID as returned by the `generate_cohort` tool.")
   )
 )
 
@@ -355,12 +391,10 @@ get_database_description <- tool(
 )
 
 evaluate_cohort <- tool(
-  function(caprCode, phenotype) {
-    json <- compileCaprViaWorker(caprCode)
+  function(cohortId, phenotype) {
     connection <- connect(connectionDetails)
     on.exit(disconnect(connection))
     
-    cohortId <- ensureCohortExists(json, connection)
     metrics <- computeCohortOperatingCharacteristics(
       connection = connection,     
       cohortDatabaseSchema = cohortDatabaseSchema,
@@ -383,31 +417,25 @@ evaluate_cohort <- tool(
   },
   name = "evaluate_cohort",
   description = paste(
-    "Generate the cohort in the available database(s) (if needed) and evaluate it using",
-    "a 10,000 person KEEPER reference cohort.",
+    "Evaluate the cohort using a 10,000 person KEEPER reference cohort.",
     "Returns sensitivity, specificity (adjusted for sampling), PPV, and the confusion matrix."
   ),
   arguments = list(
-    caprCode = type_string(paste(
-      "A single Capr cohort definition as R code: one cohort(...) expression with all concept",
-      "sets inlined and no assignments. Compiled server-side — do not pass JSON."
-    )),
+    cohortId = type_integer("The cohort ID as returned by the `generate_cohort` tool."),
     phenotype = type_string("Name of the phenotype.")
   )
 )
 
 sample_patient_profile <- tool(
-  function(caprCode, phenotype, type) {
+  function(cohortId, phenotype, type) {
     type <- tolower(type)
     if (!type %in% c("tp", "fp", "tn", "fn")) {
       return("Error: type must have value 'TP', 'FP', 'TN', or 'FN'")
     }
     
-    json <- compileCaprViaWorker(caprCode)
     connection <- connect(connectionDetails)
     on.exit(disconnect(connection))
     
-    cohortId <- ensureCohortExists(json, connection)
     sql <- "
       SELECT CAST(subject_id AS VARCHAR) AS subject_id
       FROM (
@@ -484,15 +512,11 @@ sample_patient_profile <- tool(
   },
   name = "sample_patient_profile",
   description = paste(
-    "Generate the cohort in the available database(s) (if needed) and return the patient profile",
-    "and rationale for one random patient in the KEEPER reference set.",
+    "Return the patient profile and rationale for one random patient in the KEEPER reference set.",
     "Call multiple times to sample multiple patients."
   ),
   arguments = list(
-    caprCode = type_string(paste(
-      "A single Capr cohort definition as R code: one cohort(...) expression with all concept",
-      "sets inlined and no assignments. Compiled server-side — do not pass JSON."
-    )),
+    cohortId = type_integer("The cohort ID as returned by the `generate_cohort` tool."),
     phenotype = type_string("Name of the phenotype. Used to fetch the gold standard."),
     type = type_enum(c("TP", "FP", "TN", "FN"), paste(
       "Type, based on classification status, using the KEEPER reference cohort as gold standard.",
@@ -506,11 +530,12 @@ sample_patient_profile <- tool(
 mcp_server(
   tools = list(
     list_concept_sets,
-    get_concept_set_capr,
+    get_concept_sets_capr,
     get_cohort_count,
     get_database_description,
     validate_capr,
     convert_capr_to_json,
+    generate_cohort,
     evaluate_cohort,
     sample_patient_profile
   ),
