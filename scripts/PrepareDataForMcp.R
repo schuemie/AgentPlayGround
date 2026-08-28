@@ -18,7 +18,7 @@ referenceCohortProfilesTable <- "reference_cohort_profiles_optum_extended_dod_v4
 # Collect all concept sets from folder ------------------------------------------------------
 connection <- connect(connectionDetails)
 
-folder <- "../largescalephentest/phenelopeConceptSetsNew"
+folder <- "../largescalephentest/phenelopeConceptSets"
 
 jsonToCaprWithReference <- function(json, target) {
   expression <- CirceR::conceptSetExpressionFromJson(json)
