@@ -128,6 +128,17 @@ getCounts <- function(conceptSetSql) {
         SELECT concept_id
         FROM concept_set
       )
+      
+      UNION ALL
+       
+      SELECT DISTINCT
+       person_id,
+       'Visit' AS domain_id
+      FROM @cdm_database_schema.visit_occurrence
+      WHERE visit_concept_id IN (
+        SELECT concept_id
+        FROM concept_set
+      )
     )
     SELECT
       COUNT(DISTINCT CASE
@@ -150,6 +161,10 @@ getCounts <- function(conceptSetSql) {
         WHEN domain_id = 'Observation' THEN person_id
       END) AS observation_persons,
        
+      COUNT(DISTINCT CASE
+        WHEN domain_id = 'Visit' THEN person_id
+      END) AS visit_persons,
+      
       COUNT(DISTINCT person_id) AS overall_persons
       FROM domain_persons;
   "
@@ -213,6 +228,40 @@ rows <- bind_rows(rows)
 object.size(rows) / 1024^2
 saveRDS(rows, "tools/PhenelopeConceptSets.rds")
 readr::write_csv(rows, file.path(folder, "overview.csv"))
+disconnect(connection)
+
+# Add standard concept sets ---------------------------------------------------------------
+connection <- connect(connectionDetails)
+
+# conceptSet = standardConceptSets[[1]]
+processStandardConceptSet <- function(conceptSet) {
+  conceptSet <- Capr::getConceptSetDetails(conceptSet, connection, cdmDatabaseSchema)
+  json <- Capr::toConceptSetJson(conceptSet)
+  target <- conceptSet@Name
+  conceptSetSql <- CirceR::buildConceptSetQuery(json)
+  caprWithReference <- jsonToCaprWithReference(json, target)
+
+  counts <- getCounts(conceptSetSql)
+  
+  row <- tibble(
+    target = target,
+    json = json,
+    sql = conceptSetSql
+  ) |> 
+    bind_cols(caprWithReference) |>
+    bind_cols(counts)
+  return(row)
+}
+
+standardConceptSets <- list(
+  Capr::cs(Capr::descendants(9201), name = "Inpatient visit"),
+  Capr::cs(Capr::descendants(9202), name = "Outpatient visit"),
+  Capr::cs(Capr::descendants(9203, 262), name = "Emergency room visit")
+)
+rows <- lapply(standardConceptSets, processStandardConceptSet)
+rows <- bind_rows(rows)
+saveRDS(rows, "tools/StandardConceptSets.rds")
+
 disconnect(connection)
 
 # Upload KEEPER profiles ------------------------------------------------------------------

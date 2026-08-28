@@ -21,7 +21,8 @@ Data in observational healthcare databases (insurance claims, electronic health 
 
 ### Phase 1: Conceptual Design
 1. **Retrieve available concept sets:** Use the `list_concept_sets` tool to identify relevant OMOP concept sets for the phenotype and their person counts. Concept sets with 0 counts are likely unhelpful.
-2. **Apply Clinical & Database Knowledge:** Develop an initial best-guess cohort definition based on clinical reality and your knowledge of EHRs and Claims data. Outline the required concept sets and temporal logic. Use `get_concept_sets_capr` to fetch Capr `cs(...)` code and per-domain person counts for the concept sets you need.
+2. **Create additional concept sets:** At any time you can create additional concept sets using the `create_new_concept_set` tool.
+2. **Apply Clinical & Database Knowledge:** Develop an initial best-guess cohort definition based on clinical reality and your knowledge of EHRs and Claims data. Outline the required concept sets and temporal logic. Use `get_concept_sets_capr` to fetch Capr `cs(...)` code and per-domain person counts for the pre-created concept sets you need.
 
 ### Phase 2: Implementation & Generation (Unlimited Attempts)
 *You may iterate through this phase as many times as needed to get reasonable person counts and attrition rates before proceeding to KEEPER evaluations.*
@@ -51,3 +52,17 @@ Think about how the phenotype plays out in a real-world healthcare setting:
 2. **Never write a concept ID from memory.** This includes clinical concepts and type/unit/status/provider-specialty IDs. Use the Hecate tools if needed to find individual concepts.
 3. Concept sets **must** be constructed using the `get_concept_set_capr` tool. This tool generates Capr code that can be added to the overall code. 
 4. **Say so when the cohort is not expressible in Capr/Circe.** Check every request against the wrong-tool signals in `CAPR_REFERENCE.md` before writing code. A definition that compiles but means something different from what the user asked for is worse than no code — never deliver a silent approximation; state the mismatch and propose the decomposition pattern instead.
+
+## Creating additional concept sets
+Provide a name and a description for the concept set. The following rules apply to the description:
+- Provide a comprehensive paragraph (minimum 3–4 detailed sentences).
+- Do NOT provide a generic dictionary definition, tautology, or simple repetition of the name.
+- Define the concept set strictly in isolation based on its intrinsic clinical, pathophysiological, laboratory, or anatomical properties.
+- Do NOT mention the phenotype for which we are developing a cohort definition.
+- Do NOT explain why the concept set is relevant to the phenotype, how it acts as a risk factor, or how it alters clinical management.
+- Explicitly define what the concept set encompasses and what it excludes.
+- Clarify key clinical distinctions, including:
+  - Chronicity (e.g., acute vs. chronic)
+  - Etiology (e.g., primary vs. secondary, acquired vs. congenital)
+  - Severity or Staging (e.g., eGFR thresholds, laboratory markers, structural criteria)
+  - Related conditions (e.g., dialysis/transplant status, underlying systemic etiologies)
