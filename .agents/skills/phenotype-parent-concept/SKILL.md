@@ -1,3 +1,4 @@
+---
 name: phenotype-parent-concept
 description: Identify the immediate clinical Umbrella Term (parent concept) for a given Medical Condition using internal ontological knowledge, and map it to an OHDSI standard concept.
 ---

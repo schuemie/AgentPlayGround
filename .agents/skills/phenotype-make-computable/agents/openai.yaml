@@ -1,0 +1,4 @@
+interface:
+  display_name: "Make Computable Phenotype"
+  short_description: "Turn reviewed cohort narratives into Capr"
+  default_prompt: "Use $phenotype-make-computable to turn this reviewed cohort narrative into a validated Capr and Circe definition."
